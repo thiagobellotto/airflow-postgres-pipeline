@@ -1,79 +1,68 @@
-# ETL - JSONPlaceHolder
-Project built for an ETL pipeline with Airflow, Docker and PostgreSQL.
+# JSONPlaceholder · Reliable ETL
 
-It was developed with a custom version of Airflow (via Docker-Compose), by accesing the API <input type="text"><a href="https://jsonplaceholder.typicode.com/">JSONPlaceHolder</a></input> (via /posts and /users), and transforming and loading the informations into a PostgreSQL inside the Docker Container.
+An Airflow pipeline that downloads users and posts, validates their relationships, and loads PostgreSQL without duplicating records on reruns.
 
-## Create an .env file
-When running for the first time, it is necessary to create an .env file. Store this two variables inside:
+**Airflow 3.3.2 · PostgreSQL · Docker Compose**
 
-`AIRFLOW_UID=50000`
+![Successful Airflow run](assets/airflow-run.png)
 
-`AIRFLOW_GID=0`
+## Run
 
+```bash
+docker compose up --build
+```
 
-## Entrypoint
-After cloning the repository, go to the folder and run the code below (be sure to have the docker up and running!): 
+Open [Airflow](http://localhost:8080) and sign in with `airflow` / `airflow`. The **JSONPlaceholder · Reliable ETL** DAG is enabled automatically and runs daily. Use **Trigger** to start another run.
 
-For the first time: `mkdir logs plugins`
+This is a local demo using JSONPlaceholder's fictional data. Airflow's standalone mode keeps the setup small; the UI is bound to localhost.
 
-Everytime: `docker-compose -f docker-compose.yaml up airflow-init && docker-compose up`
+## Pipeline
 
+```mermaid
+flowchart LR
+    A[Extract users] --> C[Validate and transform]
+    B[Extract posts] --> C
+    C --> D[Publish to PostgreSQL]
+    D --> E[Run summary]
+```
 
-## First configs
-The entrypoint for the PostgreSQL is the .init file, which is going to create:
+- Each run keeps its API responses under `data/`. Retries reuse the same snapshot, with file paths passed through XCom.
+- Validation rejects empty responses, duplicate IDs, invalid coordinates, missing required fields, and posts without a matching source user.
+- Users and posts load in one transaction. Primary keys prevent duplicates; a foreign key enforces the relationship.
+- Content hashes distinguish inserted, updated, and unchanged records. Unchanged rows keep their original timestamps.
+- A completed run is recorded in `api_json.pipeline_runs` in the same transaction. Repeating its run ID returns the committed result.
+- Missing API records are not treated as deletions. New runs fetch current responses; this source does not provide historical snapshots.
 
-`schema: json_api`
+## Inspect the results
 
-`table: users`
+Run summaries are available in the `run_summary` task logs and PostgreSQL:
 
-`table: posts`
+```bash
+docker compose exec postgres psql -U warehouse -d jsonplaceholder \
+  -c 'SELECT * FROM api_json.pipeline_runs ORDER BY completed_at DESC;'
+```
 
+Explore the author summary:
 
-## PGAdmin
-It is useful as a GUI for the user, to query the data. It is available via: <input type="text"><a href="http://localhost:5050/">localhost:5050</a></input>. The standard profile created is:
+```bash
+docker compose exec postgres psql -U warehouse -d jsonplaceholder \
+  -c 'SELECT * FROM api_json.author_summary ORDER BY post_count DESC, user_id;'
+```
 
-`username: airflow@airflow.com`
+Trigger the DAG twice. With unchanged source data, the second run should report 10 unchanged users and 100 unchanged posts, and the table counts should remain 10 and 100.
 
-`password: airflow`
+## Storage and configuration
 
-To connect with the server, go to "Add New Server", name the server and set the below infos:
+`data/` contains source and prepared JSON snapshots and is excluded from Git. PostgreSQL and Airflow logs use Docker volumes. Airflow metadata and ETL tables live in separate databases. Containers connect directly through the Compose network.
 
-`Host name/Address: host.docker.internal`
+CI starts the Docker stack and checks DAG imports on pushes to `main` that change the Dockerfile or Compose configuration.
 
-`Port: 15432`
+The Dockerfile pins the official Airflow image and its bundled Python dependencies. `AIRFLOW_PORT` can change the host UI port, for example `AIRFLOW_PORT=8081 docker compose up --build`.
 
-`Maintenance Database: airflow`
+```bash
+docker compose down
+```
 
-`Username: airflow`
+Stopping the stack keeps the data volumes. Existing deployments from the original repository need a separate schema migration; the initialization SQL applies to a new database volume.
 
-`Password: airflow`
-
-
-## Conections
-The connections needed are created programatically, there is no need to insert them manually. There are two:
-
-- HTTP, for connecting with the API;
-- Postgres, to connect with the database.
-
-
-## Airflow custom configs
-I have adjusted some general configs, by letting the DAGs created along with the application to run immediately and do not display the example DAGs.
-
-But also, by letting the entrypoint and adjusting the port from the host to the container.
-
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
-    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    volumes: - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    ports: - 15432:5432
-
-The GUI is available via <input type="text"><a href="http://localhost:8080/">localhost:8080</a></input>.
-
-## Flow from the DAGs
-
-![image](https://user-images.githubusercontent.com/17580929/169189278-4b2abf85-bdb4-4dc5-bd89-e4acf4c287b4.png)
-
-
-## Query the database via PGAdmin
-
-![image](https://user-images.githubusercontent.com/17580929/169189339-7e957cca-8cd4-4ec1-affc-1a99b17662cc.png)
-
+Source: [JSONPlaceholder](https://jsonplaceholder.typicode.com/) · Orchestration: [Apache Airflow](https://airflow.apache.org/)
