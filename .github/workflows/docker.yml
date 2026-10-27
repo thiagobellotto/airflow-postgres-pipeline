@@ -1,0 +1,27 @@
+name: Build Airflow demo
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - docker-compose.yaml
+permissions:
+  contents: read
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build
+      - run: docker compose up --wait --wait-timeout 300
+      - name: Check DAG imports
+        run: |
+          docker compose exec -T airflow python - <<'PYTHON'
+          from airflow.dag_processing.dagbag import DagBag
+          bag = DagBag('/opt/airflow/dags')
+          assert not bag.import_errors, bag.import_errors
+          assert 'jsonplaceholder_etl' in bag.dags
+          PYTHON
+      - if: always()
+        run: docker compose down
